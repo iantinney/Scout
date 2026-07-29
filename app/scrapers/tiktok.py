@@ -80,6 +80,13 @@ def scrape_tiktok_profile(username: str) -> Optional[Dict]:
 
     bio = user.get('signature', '')
 
+    # FORK CHANGE (riversnap): the rehydration payload already carries commerce and
+    # bio-link fields upstream discards. ttSeller / commerceUser are live TikTok Shop
+    # signals — cheaper and fresher than re-buying them from a panel provider — and
+    # bioLink is the hop where creator contact details usually live.
+    bio_link = user.get('bioLink') or {}
+    commerce = user.get('commerceUserInfo') or {}
+
     profile = {
         'platform': 'tiktok',
         'username': user.get('uniqueId', username),
@@ -92,6 +99,11 @@ def scrape_tiktok_profile(username: str) -> Optional[Dict]:
         'following_count': stats.get('followingCount', 0),
         'likes_count': stats.get('heartCount', 0),
         'video_count': stats.get('videoCount', 0),
+        'is_seller': bool(user.get('ttSeller', False)),
+        'is_commerce_user': bool(commerce.get('commerceUser', False)),
+        'bio_link': bio_link.get('link') or None,
+        'language': user.get('language') or None,
+        'is_private': bool(user.get('privateAccount', False)),
     }
 
     logger.info(
