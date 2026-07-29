@@ -81,54 +81,14 @@ _LOGO_LINES = [
 ]
 
 _session_stats = {"scraped": 0}
-_update_cache = {"checked": False, "latest": None}
-
-
-def _check_for_updates():
-    """Check GitHub releases API for a newer version. Non-blocking, fails silently."""
-    if _update_cache["checked"]:
-        return _update_cache["latest"]
-
-    _update_cache["checked"] = True
-
-    try:
-        import requests as _req
-        resp = _req.get(
-            "https://api.github.com/repos/kiryano/Scout/releases/latest",
-            headers={"Accept": "application/vnd.github.v3+json"},
-            timeout=3,
-        )
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
-        tag = data.get("tag_name", "")
-        latest = tag.lstrip("v").strip()
-        if not latest:
-            return None
-
-        def _ver(s):
-            try:
-                return tuple(int(x) for x in s.split("."))
-            except (ValueError, AttributeError):
-                return (0,)
-
-        if _ver(latest) > _ver(__version__):
-            _update_cache["latest"] = latest
-            return latest
-
-    except Exception:
-        pass
-
-    return None
-
-
-def _start_update_check():
-    """Fire off the update check in a background thread so it doesn't block startup."""
-    import threading
-    t = threading.Thread(target=_check_for_updates, daemon=True)
-    t.start()
-    return t
+# FORK CHANGE (riversnap): the upstream update checker was removed.
+#
+# Upstream polled github.com/kiryano/Scout releases on every start and called
+# sys.exit(1) when the local version was behind — an out-of-band kill switch the
+# upstream author controls over a tool we run unattended in data pipelines. A
+# dependency that can be remotely disabled is not something we build on top of.
+#
+# Pull upstream fixes deliberately instead: `git fetch upstream && git merge upstream/main`.
 
 
 custom_theme = Theme({
@@ -1058,24 +1018,8 @@ def view_exports():
 
 
 def main():
-    _update_thread = _start_update_check()
     console.clear()
-    _update_thread.join(timeout=3.0)
     show_header()
-
-    latest = _update_cache.get("latest")
-    if latest:
-        console.print()
-        console.print(Panel(
-            f"[bold white]Scout v{latest} is available.[/bold white]\n"
-            f"[dim]You are running v{__version__}. Please update before continuing.[/dim]\n\n"
-            f"[{ACCENT}]git pull origin main[/{ACCENT}]  [dim]or visit[/dim]  [{ACCENT}]github.com/kiryano/Scout[/{ACCENT}]",
-            border_style=ACCENT,
-            title="[bold white]Update Required[/bold white]",
-            padding=(1, 3),
-        ))
-        console.print()
-        sys.exit(1)
 
     while True:
         show_menu()

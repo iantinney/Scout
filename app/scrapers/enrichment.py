@@ -1,3 +1,4 @@
+import os
 import re
 import dns.resolver
 import smtplib
@@ -13,6 +14,23 @@ import httpx
 from app.scrapers.stealth import random_user_agent, random_delay
 
 logger = logging.getLogger(__name__)
+
+# FORK CHANGE (riversnap): address guessing is OFF by default.
+#
+# Upstream synthesises addresses that were never observed anywhere — it takes a
+# name plus a domain and emits first.last@, first@, f.last@ … then keeps any that
+# an SMTP RCPT probe doesn't reject. Those are inventions, not contacts. Mailing
+# them is the fastest way to spike hard bounces and burn a sending domain's
+# reputation, and the probe can't tell you much anyway: catch-all domains accept
+# everything (upstream's own code detects this and proceeds regardless).
+#
+# Only OBSERVED addresses — published in a bio, on a site, or behind a bio link —
+# are safe to send to. Set SCOUT_ALLOW_GUESSED_EMAILS=true to re-enable guessing
+# for research/enumeration work where nothing will actually be mailed.
+ALLOW_GUESSED_EMAILS = os.getenv('SCOUT_ALLOW_GUESSED_EMAILS', '').lower() in ('1', 'true', 'yes')
+
+# Sources that represent a real, observed, published address.
+OBSERVED_SOURCES = frozenset({'bio', 'website', 'contact_page', 'bio_link', 'hunter.io'})
 
 EMAIL_RE = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
 EMAIL_BLACKLIST = ['example.com', 'test.com', 'email.com', 'youremail.com',
@@ -70,14 +88,15 @@ class LeadEnricher:
 
         work_domain = company_domain or (self._extract_domain(website) if website_is_useful else None)
 
-        if lead_data.get('full_name') and work_domain:
+        # FORK CHANGE (riversnap): both blocks below synthesise addresses. Gated off.
+        if ALLOW_GUESSED_EMAILS and lead_data.get('full_name') and work_domain:
             pattern_email = self._predict_email_from_pattern(
                 lead_data['full_name'], 'https://' + work_domain, site_emails
             )
             if pattern_email:
                 email_candidates.append((pattern_email, 'pattern'))
 
-        if not email_candidates and lead_data.get('full_name') and work_domain:
+        if ALLOW_GUESSED_EMAILS and not email_candidates and lead_data.get('full_name') and work_domain:
             candidates = self._generate_email_candidates(lead_data['full_name'], 'https://' + work_domain)
             for c in candidates[:5]:
                 smtp = self._verify_email_smtp(c)
@@ -128,10 +147,26 @@ class LeadEnricher:
                 enriched['email_source'] = best['source']
                 enriched['email_verified'] = best['verified']
 
-        if not enriched.get('email') and lead_data.get('full_name') and work_domain:
+        # FORK CHANGE (riversnap): 'possible_emails' is a list of invented addresses
+        # that lands in the CSV export next to real ones. Gated off — an operator
+        # scanning a spreadsheet cannot be expected to remember which column is fiction.
+        if (ALLOW_GUESSED_EMAILS and not enriched.get('email')
+                and lead_data.get('full_name') and work_domain):
             enriched['possible_emails'] = self._generate_email_candidates(
                 lead_data['full_name'], 'https://' + work_domain
             )
+
+        # FORK CHANGE (riversnap): hard backstop. Even if a future upstream merge
+        # reintroduces a guessing path, an unobserved address never leaves this method.
+        if (not ALLOW_GUESSED_EMAILS and enriched.get('email')
+                and enriched.get('email_source') not in OBSERVED_SOURCES):
+            logger.warning(
+                "Dropping guessed email for %s (source=%s) — set SCOUT_ALLOW_GUESSED_EMAILS=true to keep it",
+                lead_data.get('username') or lead_data.get('full_name') or '?',
+                enriched.get('email_source'),
+            )
+            for k in ('email', 'email_score', 'email_source', 'email_verified'):
+                enriched.pop(k, None)
 
         enriched['lead_score'] = self._calculate_lead_score(enriched)
         return enriched
